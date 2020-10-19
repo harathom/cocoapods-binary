@@ -2,7 +2,6 @@ require_relative 'helper/podfile_options'
 require_relative 'helper/feature_switches'
 require_relative 'helper/prebuild_sandbox'
 require_relative 'helper/passer'
-require_relative 'helper/names'
 require_relative 'helper/target_checker'
 
 
@@ -26,9 +25,13 @@ module Pod
 
                 # make a symlink to target folder
                 prebuild_sandbox = Pod::PrebuildSandbox.from_standard_sandbox(standard_sanbox)
-                # if spec used in multiple platforms, it may return multiple paths
-                target_names = prebuild_sandbox.existed_target_names_for_pod_name(self.name)
-                
+                real_file_folder = prebuild_sandbox.framework_folder_path_for_pod_name(self.name)
+
+                target_folder = standard_sanbox.pod_dir(self.name)
+                target_folder.rmtree if target_folder.exist?
+                target_folder.mkdir
+
+                # make a relatvie symbol link for all children
                 def walk(path, &action)
                     return unless path.exist?
                     path.children.each do |child|
@@ -49,51 +52,31 @@ module Pod
                     target = target_folder + source.relative_path_from(basefolder)
                     make_link(source, target)
                 end
-                
-                target_names.each do |name|
 
-                    # symbol link copy all substructure
-                    real_file_folder = prebuild_sandbox.framework_folder_path_for_target_name(name)
-                    
-                    # If have only one platform, just place int the root folder of this pod.
-                    # If have multiple paths, we use a sperated folder to store different
-                    # platform frameworks. e.g. AFNetworking/AFNetworking-iOS/AFNetworking.framework
-                    
-                    target_folder = standard_sanbox.pod_dir(self.name)
-                    if target_names.count > 1 
-                        target_folder += real_file_folder.basename
+                # symbol link copy all substructure
+                walk(real_file_folder) do |child|
+                    source = child
+                    # only make symlink to file and `.framework` folder
+                    if child.directory? and [".framework", ".dSYM"].include? child.extname
+                        mirror_with_symlink(source, real_file_folder, target_folder)
+                        next false  # return false means don't go deeper
+                    elsif child.file?
+                        mirror_with_symlink(source, real_file_folder, target_folder)
+                        next true
+                    else
+                        next true
                     end
-                    target_folder.rmtree if target_folder.exist?
-                    target_folder.mkpath
+                end
 
-
-                    walk(real_file_folder) do |child|
-                        source = child
-                        # only make symlink to file and `.framework` folder
-                        if child.directory? and [".framework", ".dSYM"].include? child.extname
-                            mirror_with_symlink(source, real_file_folder, target_folder)
-                            next false  # return false means don't go deeper
-                        elsif child.file?
-                            mirror_with_symlink(source, real_file_folder, target_folder)
-                            next true
-                        else
-                            next true
-                        end
+                # symbol link copy resource for static framework
+                hash = Prebuild::Passer.resources_to_copy_for_static_framework || {}
+                path_objects = hash[self.name]
+                if path_objects != nil
+                    path_objects.each do |object|
+                        make_link(object.real_file_path, object.target_file_path)
                     end
-
-
-                    # symbol link copy resource for static framework
-                    hash = Prebuild::Passer.resources_to_copy_for_static_framework || {}
-                    
-                    path_objects = hash[name]
-                    if path_objects != nil
-                        path_objects.each do |object|
-                            make_link(object.real_file_path, object.target_file_path)
-                        end
-                    end
-                end # of for each 
-
-            end # of method
+                end
+            end
 
         end
     end
@@ -114,7 +97,7 @@ module Pod
             changes = Pod::Prebuild::Passer.prebuild_pods_changes
             updated_names = []
             if changes == nil
-                updated_names = PrebuildSandbox.from_standard_sandbox(self.sandbox).exsited_framework_pod_names
+                updated_names = PrebuildSandbox.from_standard_sandbox(self.sandbox).exsited_framework_names
             else
                 added = changes.added
                 changed = changes.changed 
@@ -146,62 +129,60 @@ module Pod
 
             # call original
             old_method2.bind(self).()
-            # ...
-            # ...
-            # ...
-            # after finishing the very complex orginal function
 
             # check the pods
             # Although we have did it in prebuild stage, it's not sufficient.
             # Same pod may appear in another target in form of source code.
-            # Prebuild.check_one_pod_should_have_only_one_target(self.prebuild_pod_targets)
-            self.validate_every_pod_only_have_one_form
+            Prebuild.check_one_pod_should_have_only_one_target(self.prebuild_pod_targets)
 
-            
-            # prepare
-            cache = []
-
-            def add_vendered_framework(spec, platform, added_framework_file_path)
-                if spec.attributes_hash[platform] == nil
-                    spec.attributes_hash[platform] = {}
-                end
-                vendored_frameworks = spec.attributes_hash[platform]["vendored_frameworks"] || []
-                vendored_frameworks = [vendored_frameworks] if vendored_frameworks.kind_of?(String)
-                vendored_frameworks += [added_framework_file_path]
-                spec.attributes_hash[platform]["vendored_frameworks"] = vendored_frameworks
-            end
-            def empty_source_files(spec)
-                spec.attributes_hash["source_files"] = []
-                ["ios", "watchos", "tvos", "osx"].each do |plat|
-                    if spec.attributes_hash[plat] != nil
-                        spec.attributes_hash[plat]["source_files"] = []
-                    end
-                end
-            end
-
-
+            #
             specs = self.analysis_result.specifications
             prebuilt_specs = (specs.select do |spec|
                 self.prebuild_pod_names.include? spec.root.name
             end)
+            
+            # make sturcture to fast get target by name
+            name_to_target_hash = self.pod_targets.reduce({}) do |sum, target|
+                sum[target.name] = target
+                sum
+            end
 
             prebuilt_specs.each do |spec|
+                # `spec` may be a subspec, so we use the root's name 
+                root_name = spec.root.name
+                
+                target = name_to_target_hash[root_name]
+                next if Prebuild::Passer.target_names_to_skip_integration_framework.include? target.pod_name
 
-                # Use the prebuild framworks as vendered frameworks
-                # get_corresponding_targets
-                targets = Pod.fast_get_targets_for_pod_name(spec.root.name, self.pod_targets, cache)
-                targets.each do |target|
-                    # the framework_file_path rule is decided when `install_for_prebuild`,
-                    # as to compitable with older version and be less wordy.
-                    framework_file_path = target.framework_name
-                    framework_file_path = target.name + "/" + framework_file_path if targets.count > 1
-                    add_vendered_framework(spec, target.platform.name.to_s, framework_file_path)
+                # use the prebuilt framework
+                original_vendored_frameworks = spec.attributes_hash["vendored_frameworks"] || []
+                if original_vendored_frameworks.kind_of?(String)
+                    original_vendored_frameworks = [original_vendored_frameworks]
                 end
-                # Clean the source files
-                # we just add the prebuilt framework to specific platform and set no source files 
-                # for all platform, so it doesn't support the sence that 'a pod perbuild for one
-                # platform and not for another platform.'
-                empty_source_files(spec)
+                original_vendored_frameworks += [target.framework_name]
+                spec.attributes_hash["vendored_frameworks"] = original_vendored_frameworks
+                spec.attributes_hash["source_files"] = []
+
+                # to remove the resurce bundle target. 
+                # When specify the "resource_bundles" in podspec, xcode will generate a bundle 
+                # target after pod install. But the bundle have already built when the prebuit
+                # phase and saved in the framework folder. We will treat it as a normal resource
+                # file.
+                # https://github.com/leavez/cocoapods-binary/issues/29
+                if spec.attributes_hash["resource_bundles"]
+                    bundle_names = spec.attributes_hash["resource_bundles"].keys
+                    spec.attributes_hash["resource_bundles"] = nil 
+                    spec.attributes_hash["resources"] ||= []
+                    if spec.attributes_hash["resources"].kind_of?(String)
+                        val = spec.attributes_hash["resources"]
+                        spec.attributes_hash["resources"] = [val]
+                    end
+                    # p(spec.attributes_hash["resources"])
+                    # p(bundle_names)
+                    bundle_names.each do |n|
+                        spec.attributes_hash["resources"] += [n]
+                    end
+                end
 
                 # to remove the resurce bundle target. 
                 # When specify the "resource_bundles" in podspec, xcode will generate a bundle 
@@ -217,8 +198,7 @@ module Pod
                 end
 
                 # to avoid the warning of missing license
-                spec.attributes_hash["license"] = {}
-
+                spec.attributes_hash["license"] = {} 
             end
 
         end
@@ -269,7 +249,7 @@ module Pod
                     # If the path isn't an absolute path, we add a realtive prefix.
                     old_read_link=`which readlink`
                     readlink () {
-                        path=`$old_read_link "$1"`;
+                        path=`$old_read_link $1`;
                         if [ $(echo "$path" | cut -c 1-1) = '/' ]; then
                             echo $path;
                         else
