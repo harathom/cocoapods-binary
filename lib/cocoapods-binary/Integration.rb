@@ -173,7 +173,15 @@ module Pod
                     bundle_names = spec.attributes_hash["resource_bundles"].keys
                     spec.attributes_hash["resource_bundles"] = nil 
                     spec.attributes_hash["resources"] ||= []
-                    spec.attributes_hash["resources"] += bundle_names.map{|n| n+".bundle"}
+                    if spec.attributes_hash["resources"].kind_of?(String)
+                        val = spec.attributes_hash["resources"]
+                        spec.attributes_hash["resources"] = [val]
+                    end
+                    # p(spec.attributes_hash["resources"])
+                    # p(bundle_names)
+                    bundle_names.each do |n|
+                        spec.attributes_hash["resources"] += [n]
+                    end
                 end
 
                 # to remove the resurce bundle target. 
