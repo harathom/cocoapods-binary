@@ -44,15 +44,26 @@ module Pod
             changed = changes.changed 
             unchanged = changes.unchanged
             deleted = changes.deleted 
+            p("prebuild_pod_changes added #{added}")
+            p("prebuild_pod_changes changed #{changed}")
+            p("prebuild_pod_changes unchanged #{unchanged}")
+            p("prebuild_pod_changes deleted #{deleted}")
             
             unchange_framework_names = (added + unchanged)
 
+            # this mis-spelled paramemeter is what causes pre-compiling all the time
+            # i'm not sure what this is or what sandbox refers to..
+            # but i'm going to try to not do this check and see how things turn out..
             exsited_framework_names = sandbox.exsited_framework_names
-            missing = unchanged.select do |pod_name|
-                not exsited_framework_names.include?(pod_name)
-            end
+            p("exsited_framework_names #{exsited_framework_names}")
+            # missing = unchanged.select do |pod_name|
+            #     not exsited_framework_names.include?(pod_name)
+            # end
+            missing = []
+            p("prebuild_pod_changes missing #{deleted}")
 
             needed = (added + changed + deleted + missing)
+            p("prebuild_pod_changes needed #{needed}")
             return needed.empty?
         end
         
